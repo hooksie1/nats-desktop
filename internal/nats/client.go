@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -23,6 +24,16 @@ type ConnectionConfig struct {
 	Token    string
 	NKeyFile string
 	Creds    string
+}
+
+type MessageOpts struct {
+	Subject string
+	Reply   string
+
+	// headers as "k:v,k:v"
+	HeadersString string
+	Timeout       time.Duration
+	Data          []byte
 }
 
 func NewClient(config ConnectionConfig) (*Client, error) {
@@ -103,12 +114,17 @@ func (c *Client) JetStream() jetstream.JetStream {
 	return c.js
 }
 
-func (c *Client) Publish(subject string, data []byte) error {
+func (c *Client) Publish(opts MessageOpts) error {
 	if c.nc == nil {
 		return fmt.Errorf("connection not established")
 	}
+	msg := nats.Msg{
+		Subject: opts.Subject,
+		Data:    opts.Data,
+		Header:  parseHeaders(opts.HeadersString),
+	}
 
-	err := c.nc.Publish(subject, data)
+	err := c.nc.PublishMsg(&msg)
 	if err != nil {
 		return fmt.Errorf("failed to publish: %w", err)
 	}
@@ -116,12 +132,12 @@ func (c *Client) Publish(subject string, data []byte) error {
 	return nil
 }
 
-func (c *Client) PublishRequest(subject, reply string, data []byte) error {
+func (c *Client) PublishRequest(opts MessageOpts) error {
 	if c.nc == nil {
 		return fmt.Errorf("connection not established")
 	}
 
-	err := c.nc.PublishRequest(subject, reply, data)
+	err := c.nc.PublishRequest(opts.Subject, opts.Reply, opts.Data)
 	if err != nil {
 		return fmt.Errorf("failed to publish request: %w", err)
 	}
@@ -155,25 +171,36 @@ func (c *Client) SubscribeWithQueue(subject, queue string, handler nats.MsgHandl
 	return sub, nil
 }
 
-func (c *Client) Request(subject string, data []byte, timeout time.Duration) (*nats.Msg, error) {
+func (c *Client) Request(opts MessageOpts) (*nats.Msg, error) {
 	if c.nc == nil {
 		return nil, fmt.Errorf("connection not established")
 	}
+	msg := nats.Msg{
+		Subject: opts.Subject,
+		Header:  parseHeaders(opts.HeadersString),
+		Data:    opts.Data,
+	}
 
-	msg, err := c.nc.Request(subject, data, timeout)
+	resp, err := c.nc.RequestMsg(&msg, opts.Timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	return msg, nil
+	return resp, nil
 }
 
-func (c *Client) RequestWithContext(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
+func (c *Client) RequestWithContext(ctx context.Context, opts MessageOpts) (*nats.Msg, error) {
 	if c.nc == nil {
 		return nil, fmt.Errorf("connection not established")
 	}
 
-	return c.nc.RequestWithContext(ctx, subject, data)
+	msg := nats.Msg{
+		Subject: opts.Subject,
+		Data:    opts.Data,
+		Header:  parseHeaders(opts.HeadersString),
+	}
+
+	return c.nc.RequestMsgWithContext(ctx, &msg)
 }
 
 func (c *Client) GetStatus() string {
@@ -1295,4 +1322,24 @@ func (c *Client) BackupStream(ctx context.Context, streamName string) (*StreamBa
 	}
 
 	return backup, nil
+}
+
+func parseHeaders(s string) map[string][]string {
+	kvPairs := make(map[string]string)
+	split := strings.SplitSeq(s, ",")
+	for v := range split {
+		pairs := strings.Split(v, ":")
+		if len(pairs) == 2 {
+			key := strings.TrimSpace(pairs[0])
+			val := strings.TrimSpace(pairs[1])
+			kvPairs[key] = val
+		}
+	}
+
+	natsHeaders := map[string][]string{}
+	for k, v := range kvPairs {
+		natsHeaders[k] = []string{v}
+	}
+
+	return natsHeaders
 }

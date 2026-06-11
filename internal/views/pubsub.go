@@ -34,6 +34,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/thedataflows/nats-desktop/internal/icons"
+	intnats "github.com/thedataflows/nats-desktop/internal/nats"
 	"github.com/thedataflows/nats-desktop/internal/navigator"
 
 	"github.com/thedataflows/nats-desktop/internal/shortcuts"
@@ -75,7 +76,7 @@ type PubSubView struct {
 
 	// Advanced publish fields
 	countInput      *components.InputField
-	headersEditor   *components.CodeEditor
+	headersEditor   *components.InputField
 	translateEditor *components.InputField
 	useTemplates    bool
 	useHeaders      bool
@@ -165,8 +166,8 @@ func NewPubSubView(th *theme.Theme) *PubSubView {
 	// Initialize advanced publish fields
 	v.countInput = components.NewLabeledInputFieldWithPosition("Count", "1", components.LabelPositionTop)
 	v.countInput.SetIcon(icons.ContentFilterList, components.IconPositionStart)
-	v.headersEditor = components.NewCodeEditor("", components.CodeLanguageJSON, th)
-	v.headersEditor.SetReadOnly(false)
+	v.headersEditor = components.NewLabeledInputFieldWithPosition("Headers", "k:v,k:v", components.LabelPositionTop)
+	v.headersEditor.SetIcon(icons.ContentFilterList, components.IconPositionStart)
 	v.translateEditor = components.NewLabeledInputFieldWithPosition("Translate", "jq .", components.LabelPositionTop)
 	v.translateEditor.SetIcon(icons.ActionSettings, components.IconPositionStart)
 
@@ -594,6 +595,7 @@ func (v *PubSubView) Layout(gtx layout.Context, th *theme.Theme) layout.Dimensio
 	for v.pubBtn.Clicked(gtx) {
 		subject := v.subjectEditor.GetText()
 		payload := v.codeEditor.GetText()
+		headers := v.headersEditor.GetText()
 		if subject == "" {
 			if v.App != nil {
 				v.App.ShowToast("Subject is required", components.ToastTypeError)
@@ -624,7 +626,12 @@ func (v *PubSubView) Layout(gtx layout.Context, th *theme.Theme) layout.Dimensio
 					// Process template variables
 					processedPayload := v.processTemplate(pay, i+1)
 
-					err := client.Publish(subj, []byte(processedPayload))
+					opts := intnats.MessageOpts{
+						Subject:       subj,
+						HeadersString: headers,
+						Data:          []byte(processedPayload),
+					}
+					err := client.Publish(opts)
 					if err != nil {
 						v.App.ShowToast(err.Error(), components.ToastTypeError)
 						break
@@ -1192,6 +1199,16 @@ func (v *PubSubView) layoutCompose(gtx layout.Context, th *theme.Theme) layout.D
 		layout.Rigid(func(cgtx layout.Context) layout.Dimensions {
 			return v.queueEditor.Layout(cgtx, th)
 		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+		layout.Rigid(func(cgtx layout.Context) layout.Dimensions {
+			lbl := material.Label(th.Material(), unit.Sp(14), "Headers (optional)")
+			lbl.Font.Weight = font.Bold
+			lbl.Color = th.TextColor
+			return layout.Inset{Bottom: unit.Dp(4)}.Layout(cgtx, lbl.Layout)
+		}),
+		layout.Rigid(func(cgtx layout.Context) layout.Dimensions {
+			return v.headersEditor.Layout(cgtx, th)
+		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 		layout.Rigid(func(cgtx layout.Context) layout.Dimensions {
 			lbl := material.Label(th.Material(), unit.Sp(14), "Message Count (for templates: {{.Count}}, {{.TimeStamp}}, {{.UUID}})")
@@ -1392,7 +1409,11 @@ func (v *PubSubView) handleReplyMessage(msg *nats.Msg) {
 	if v.App != nil {
 		client := v.App.GetNatsClient()
 		if client != nil {
-			client.Publish(msg.Reply, response)
+			opts := intnats.MessageOpts{
+				Subject: msg.Reply,
+				Data:    response,
+			}
+			client.Publish(opts)
 			v.addMessage(msg.Subject, "Reply Sent", string(response))
 		}
 	}
@@ -1718,6 +1739,7 @@ func (v *PubSubView) handleExportMessages() bool {
 func (v *PubSubView) handleRequestWithOptions() bool {
 	subject := v.subjectEditor.GetText()
 	payload := v.codeEditor.GetText()
+	headers := v.headersEditor.GetText()
 
 	if subject == "" {
 		if v.App != nil {
@@ -1771,7 +1793,12 @@ func (v *PubSubView) handleRequestWithOptions() bool {
 		}
 
 		// Send request
-		msg, err := nc.RequestWithContext(ctx, subject, []byte(payload))
+		msg := intnats.MessageOpts{
+			Data:          []byte(payload),
+			Subject:       subject,
+			HeadersString: headers,
+		}
+		resp, err := client.RequestWithContext(ctx, msg)
 		if err != nil {
 			v.App.ShowToast(err.Error(), components.ToastTypeError)
 			return
@@ -1779,7 +1806,7 @@ func (v *PubSubView) handleRequestWithOptions() bool {
 
 		// Add the reply to message history
 		v.addMessage(subject, "Request", payload)
-		v.addMessage(msg.Subject, "Received", string(msg.Data))
+		v.addMessage(resp.Subject, "Received", string(resp.Data))
 
 		var replyCount int
 		if maxReplies == 1 {
@@ -1787,7 +1814,7 @@ func (v *PubSubView) handleRequestWithOptions() bool {
 			replyCount = 1
 		} else {
 			// For multiple replies, subscribe to the reply subject
-			replySubject := msg.Subject
+			replySubject := resp.Subject
 			replyCount = 1 // Already got one
 
 			sub, err := nc.SubscribeSync(replySubject)

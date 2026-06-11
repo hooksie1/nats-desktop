@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thedataflows/nats-desktop/internal/nats"
 	"github.com/thedataflows/nats-desktop/internal/ui/components"
 	"github.com/thedataflows/nats-desktop/internal/ui/theme"
 
@@ -120,7 +121,11 @@ func (v *ServicesView) pingAllServices() {
 			// Use NATS request/reply to ping service
 			// Services respond to $SRV.PING.<service_name> subject
 			subject := fmt.Sprintf("$SRV.PING.%s", service.Name)
-			_, err := client.Request(subject, nil, 2*time.Second)
+			opts := nats.MessageOpts{
+				Subject: subject,
+				Timeout: 2 * time.Second,
+			}
+			_, err := client.Request(opts)
 			latency := time.Since(start)
 
 			result := PingResult{
