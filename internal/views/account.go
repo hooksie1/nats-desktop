@@ -29,6 +29,8 @@ type AccountView struct {
 	info       *jetstream.AccountInfo
 	loading    bool
 	refreshBtn widget.Clickable
+	management *accountManagement
+	scroll     widget.List
 
 	next, prev any
 }
@@ -39,6 +41,7 @@ func NewAccountView(th *theme.Theme) *AccountView {
 
 func (v *AccountView) SetApp(app App) {
 	v.app = app
+	v.management = newAccountManagement(app)
 }
 
 func (v *AccountView) OnEnter() {
@@ -46,7 +49,15 @@ func (v *AccountView) OnEnter() {
 }
 
 func (v *AccountView) FirstFocusTag() any { return &v.refreshBtn }
-func (v *AccountView) LastFocusTag() any  { return &v.refreshBtn }
+func (v *AccountView) LastFocusTag() any {
+	if v.management != nil {
+		tags := v.management.focusTags()
+		if len(tags) != 0 {
+			return tags[len(tags)-1]
+		}
+	}
+	return &v.refreshBtn
+}
 
 func (v *AccountView) SetNavigation(next, prev any) {
 	v.next = next
@@ -97,13 +108,15 @@ func (v *AccountView) Layout(gtx layout.Context, th *theme.Theme) layout.Dimensi
 		v.Refresh()
 	}
 
-	for {
-		ev, ok := gtx.Event(key.Filter{Name: key.NameTab, Optional: key.ModShift})
-		if !ok {
-			break
-		}
-		if ke, ok := ev.(key.Event); ok && ke.State == key.Press {
-			v.handleTab(gtx, ke.Modifiers.Contain(key.ModShift))
+	if v.management == nil || v.management.modal == nil || !v.management.modal.Visible {
+		for {
+			ev, ok := gtx.Event(key.Filter{Name: key.NameTab, Optional: key.ModShift})
+			if !ok {
+				break
+			}
+			if ke, ok := ev.(key.Event); ok && ke.State == key.Press {
+				v.handleTab(gtx, ke.Modifiers.Contain(key.ModShift))
+			}
 		}
 	}
 
@@ -111,22 +124,32 @@ func (v *AccountView) Layout(gtx layout.Context, th *theme.Theme) layout.Dimensi
 		Max: gtx.Constraints.Max,
 	}.Op())
 
-	return layout.UniformInset(unit.Dp(32)).Layout(gtx, func(cgtx layout.Context) layout.Dimensions {
-		return layout.Flex{Axis: layout.Vertical}.Layout(cgtx,
-			layout.Rigid(func(ccgtx layout.Context) layout.Dimensions {
-				return v.layoutHeader(ccgtx, th)
-			}),
-			layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
-			layout.Rigid(func(ccgtx layout.Context) layout.Dimensions {
-				return v.layoutContent(ccgtx, th)
-			}),
-		)
-	})
+	return layout.Stack{}.Layout(gtx, layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(32)).Layout(gtx, func(cgtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(cgtx,
+				layout.Rigid(func(ccgtx layout.Context) layout.Dimensions {
+					return v.layoutHeader(ccgtx, th)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+				layout.Flexed(1, func(ccgtx layout.Context) layout.Dimensions {
+					return material.List(th.Material(), &v.scroll).Layout(ccgtx, 1, func(item layout.Context, _ int) layout.Dimensions {
+						return v.layoutContent(item, th)
+					})
+				}),
+			)
+		})
+	}), layout.Stacked(func(cgtx layout.Context) layout.Dimensions {
+		if v.management != nil && v.management.modal != nil && v.management.modal.Visible {
+			return v.management.modal.Layout(cgtx, th)
+		}
+		return layout.Dimensions{}
+	}))
 }
 
 func (v *AccountView) handleTab(gtx layout.Context, shift bool) {
-	tags := []any{
-		&v.refreshBtn,
+	tags := []any{&v.refreshBtn}
+	if v.management != nil {
+		tags = append(tags, v.management.focusTags()...)
 	}
 
 	HandleTab(gtx, shift, tags, v.next, v.prev)
@@ -161,6 +184,13 @@ func (v *AccountView) layoutHeader(gtx layout.Context, th *theme.Theme) layout.D
 
 func (v *AccountView) layoutContent(gtx layout.Context, th *theme.Theme) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(cgtx layout.Context) layout.Dimensions {
+			if v.management == nil {
+				return layout.Dimensions{}
+			}
+			return v.management.layout(cgtx, th)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(24)}.Layout),
 		layout.Rigid(func(cgtx layout.Context) layout.Dimensions {
 			return v.layoutAccountDetails(cgtx, th)
 		}),
